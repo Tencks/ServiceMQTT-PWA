@@ -16,9 +16,27 @@ const __dirname = path.dirname(__filename);
 
 // Configuración del Server
 const SERVER_ID = os.hostname(); // Obtener el hostname para usarlo como ID del servidor
+
+// Obtener la dirección IP local
+function getLocalIpAddress() {
+  const interfaces = os.networkInterfaces();
+  for (const interfaceName in interfaces) {
+    const iface = interfaces[interfaceName];
+    for (let i = 0; i < iface.length; i++) {
+      const alias = iface[i];
+      if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
+        return alias.address;
+      }
+    }
+  }
+  return '127.0.0.1'; // Fallback
+}
+
+const SERVER_IP = getLocalIpAddress(); // Obtener la IP local real para usarlo como ID del servidor
+
 // Configuración y conexión MQTT
 const MQTT_BROKER_URL = 'mqtt://localhost:1883';
-const MQTT_TOPIC_BASE = 'media/info';
+const MQTT_TOPIC_BASE = 'media/status';
 const MQTT_TOPIC = `${MQTT_TOPIC_BASE}/${SERVER_ID}`;
 const MQTT_TOPIC_COMMANDS = `media/commands/${SERVER_ID}`;
 
@@ -44,7 +62,7 @@ app.use(bodyParser.json());
  * 🖥️ GET /devices
  * Devuelve todos los dispositivos y sesiones activas
  */
-app.get("/devices", (req, res) => {
+app.get("/devices", (req, res) => { //DEVUELVE LOS DEVICES DEL EQUIPO DONDE ESTE EL SERVER EJECUTADO
   const devices = SoundMixer.devices.map((device, i) => ({
     id: i,
     name: device.name,
@@ -61,8 +79,33 @@ app.get("/devices", (req, res) => {
 
   const payload = { serverId: SERVER_ID, devices: devices };
   mqttClient.publish(`media/devices/${SERVER_ID}`, JSON.stringify(payload));
-
+ 
   res.json(devices);
+});
+
+app.get('/devices/:ID_SVR', (req, res) => { //DEVUELVE LOS DECICES DEL EQUIPO DETERMINADO EN EL SERVER_ID O SERVER_IP
+  const requestedId = req.params.ID_SVR;
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
+
+  const devices = SoundMixer.devices.map((device, i) => ({
+    id: i,
+    name: device.name,
+    type: device.type,
+    volume: device.volume,
+    mute: device.mute,
+    sessions: device.sessions.map((s, j) => ({
+      id: `${i}-${j}`,
+      name: s.name,
+      volume: s.volume,
+      mute: s.mute,
+    })),
+  }));
+
+  const payload = { serverId: SERVER_ID, devices: devices };
+  mqttClient.publish(`devices/${SERVER_ID}`, JSON.stringify(payload));
+  res.json({ message: `${SERVER_ID} devices | enviado por MQTT ✅` , devices});
 });
 
 /**
@@ -140,15 +183,16 @@ function runPS(scriptPath, res) {
 
 app.post("/media/playpause", (req, res) => {
   mqttClient.publish(MQTT_TOPIC_COMMANDS, JSON.stringify({ action: "playpause", serverId: SERVER_ID }));
-  res.json({ status: "ok", message: "Comando playpause enviado a MQTT ✅" });
+  res.json({ status: "ok", message: `Comando playpause recibido por: ${SERVER_ID} | enviado por MQTT ✅` });
+  runPS(playScript);
 });
 app.post("/media/next", (req, res) => {
   mqttClient.publish(MQTT_TOPIC_COMMANDS, JSON.stringify({ action: "next", serverId: SERVER_ID }));
-  res.json({ status: "ok", message: "Comando next enviado a MQTT ✅" });
+  res.json({ status: "ok", message: `Comando next recibido por: ${SERVER_ID} | enviado por MQTT ✅` });
 });
 app.post("/media/prev", (req, res) => {
   mqttClient.publish(MQTT_TOPIC_COMMANDS, JSON.stringify({ action: "prev", serverId: SERVER_ID }));
-  res.json({ status: "ok", message: "Comando prev enviado a MQTT ✅" });
+  res.json({ status: "ok", message:`Comando prev recibido por: ${SERVER_ID} | enviado por MQTT ✅` });
 });
 
 
@@ -157,12 +201,13 @@ const PORT = 5000;
 
 const server = https.createServer(options, app).listen(PORT, () => {
   console.log(`🎧 Audio control server running on port ${PORT}`);
-  console.log(`Access it from your LAN at: http://<PC_IP>:${PORT}/devices`);
+  console.log(`Access it from your LAN at: http://${SERVER_IP}:${PORT}/devices`);
 });
 
 //WEBSOCKET
 const wss = new WebSocketServer({ server });
 
+let lastMediaInfo = {};
 wss.on('connection', ws => {
   console.log('Cliente WebSocket conectado');
 
@@ -173,17 +218,24 @@ wss.on('connection', ws => {
   ws.on('error', error => {
     console.error('Error en WebSocket:', error);
   });
+
+  if(Object.keys(lastMediaInfo).length > 0 && ws.readyState === WebSocket.OPEN){
+    ws.send(JSON.stringify(lastMediaInfo));
+  }
+
 });
 //////////////////////////
 mqttClient.on('connect', () => {
   console.log('Conectado al broker MQTT');
    mqttClient.subscribe(MQTT_TOPIC_COMMANDS, (err) => {
+    console.log(`MQTT_TOPIC configurado en start.js: ${MQTT_TOPIC}`);
     if (!err) {
       console.log(`Suscrito al tema de comandos MQTT: ${MQTT_TOPIC_COMMANDS}`);
     } else {
       console.error('Error al suscribirse al tema de comandos MQTT:', err);
     }
   });
+  mqttClient.subscribe(MQTT_TOPIC); // Asegurarse de que start.js también se suscribe al tema de estado
 });
 
 mqttClient.on('message', (topic, message) => {
@@ -192,9 +244,12 @@ mqttClient.on('message', (topic, message) => {
   console.log(`Mensaje MQTT recibido en ${topic}: ${payload}`);
 
   if (topic === MQTT_TOPIC) {
+    lastMediaInfo = JSON.parse(payload);
+    console.log(`Reenviando a WebSocket - Mensaje MQTT recibido en ${topic}: ${payload}`);
     // Reenviar a todos los clientes WebSocket conectados
     wss.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
+        console.log(`Enviando mensaje a cliente WebSocket: ${payload}`);
         client.send(payload);
       }
     });
