@@ -62,28 +62,28 @@ app.use(bodyParser.json());
  * 🖥️ GET /devices
  * Devuelve todos los dispositivos y sesiones activas
  */
-app.get("/devices", (req, res) => { //DEVUELVE LOS DEVICES DEL EQUIPO DONDE ESTE EL SERVER EJECUTADO
-  const devices = SoundMixer.devices.map((device, i) => ({
-    id: i,
-    name: device.name,
-    type: device.type,
-    volume: device.volume,
-    mute: device.mute,
-    sessions: device.sessions.map((s, j) => ({
-      id: `${i}-${j}`,
-      name: s.name,
-      volume: s.volume,
-      mute: s.mute,
-    })),
-  }));
+// app.get("/devices", (req, res) => { //DEVUELVE LOS DEVICES DEL EQUIPO DONDE ESTE EL SERVER EJECUTADO
+//   const devices = SoundMixer.devices.map((device, i) => ({
+//     id: i,
+//     name: device.name,
+//     type: device.type,
+//     volume: device.volume,
+//     mute: device.mute,
+//     sessions: device.sessions.map((s, j) => ({
+//       id: `${i}-${j}`,
+//       name: s.name,
+//       volume: s.volume,
+//       mute: s.mute,
+//     })),
+//   }));
 
-  const payload = { serverId: SERVER_ID, devices: devices };
-  mqttClient.publish(`media/devices/${SERVER_ID}`, JSON.stringify(payload));
+//   const payload = { serverId: SERVER_ID, devices: devices };
+//   mqttClient.publish(`media/devices/${SERVER_ID}`, JSON.stringify(payload));
  
-  res.json(devices);
-});
+//   res.json(devices);
+// });
 
-app.get('/devices/:ID_SVR', (req, res) => { //DEVUELVE LOS DECICES DEL EQUIPO DETERMINADO EN EL SERVER_ID O SERVER_IP
+app.get('/:ID_SVR/devices', (req, res) => { //DEVUELVE LOS DECICES DEL EQUIPO DETERMINADO EN EL SERVER_ID O SERVER_IP
   const requestedId = req.params.ID_SVR;
   if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
     return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
@@ -104,7 +104,7 @@ app.get('/devices/:ID_SVR', (req, res) => { //DEVUELVE LOS DECICES DEL EQUIPO DE
   }));
 
   const payload = { serverId: SERVER_ID, devices: devices };
-  mqttClient.publish(`devices/${SERVER_ID}`, JSON.stringify(payload));
+  mqttClient.publish(`media/${SERVER_ID}/devices`, JSON.stringify(payload));
   res.json({ message: `${SERVER_ID} devices | enviado por MQTT ✅` , devices});
 });
 
@@ -113,13 +113,21 @@ app.get('/devices/:ID_SVR', (req, res) => { //DEVUELVE LOS DECICES DEL EQUIPO DE
  * Cambia el volumen de un dispositivo
  * body: { volume: 0.5 }
  */
-app.post("/device/:id/volume", (req, res) => {
+app.post("/:ID_SVR/device/:id/volume", (req, res) => {
   const { id } = req.params;
   const { volume } = req.body;
-  const device = SoundMixer.devices[id];
+  const requestedId = req.params.ID_SVR;
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
+   const device = SoundMixer.devices[id];
+  if(device){
+    if (!device) return res.status(404).json({ error: "Device not found" });
+      device.volume = Math.max(0, Math.min(1, volume)); 
+  }
 
  const payload = { serverId: SERVER_ID, deviceId: id, volume: volume, action: "setVolume" };
-  mqttClient.publish(`media/commands/${SERVER_ID}/device`, JSON.stringify(payload));
+  mqttClient.publish(`media/${SERVER_ID}/device/commands`, JSON.stringify(payload));
   res.json({ success: true, message: "Comando de volumen de dispositivo enviado a MQTT ✅" });
 });
 
@@ -127,13 +135,22 @@ app.post("/device/:id/volume", (req, res) => {
  * 🔇 POST /device/:id/mute
  * body: { mute: true/false }
  */
-app.post("/device/:id/mute", (req, res) => {
+app.post("/:ID_SVR/device/:id/mute", (req, res) => {
   const { id } = req.params;
   const { mute } = req.body;
+  const requestedId = req.params.ID_SVR;
   const device = SoundMixer.devices[id];
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
+
+  if(device){
+    if (!device) return res.status(404).json({ error: "Device not found" });
+    device.mute = !!mute;
+  }
 
   const payload = { serverId: SERVER_ID, deviceId: id, mute: mute, action: "setMute" };
-  mqttClient.publish(`media/commands/${SERVER_ID}/device`, JSON.stringify(payload));
+  mqttClient.publish(`media/${SERVER_ID}/device/commands`, JSON.stringify(payload));
   res.json({ success: true, message: "Comando de mute de dispositivo enviado a MQTT ✅" });
 });
 
@@ -141,12 +158,24 @@ app.post("/device/:id/mute", (req, res) => {
  * 🎧 POST /session/:deviceId/:sessionId/volume
  * body: { volume: 0.3 }
  */
-app.post("/session/:deviceId/:sessionId/volume", (req, res) => {
+app.post("/:ID_SVR/session/:deviceId/:sessionId/volume", (req, res) => {
   const { deviceId, sessionId } = req.params;
   const { volume } = req.body;
-  const device = SoundMixer.devices[deviceId];
+  const requestedId = req.params.ID_SVR;
+   const device = SoundMixer.devices[deviceId];
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
+
+  if(device){
+    if (!device) return res.status(404).json({ error: "Device not found" });
+    const session = device.sessions[sessionId];
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    session.volume = Math.max(0, Math.min(1, volume));
+  }   
+  
   const payload = { serverId: SERVER_ID, deviceId: deviceId, sessionId: sessionId, volume: volume, action: "setSessionVolume" };
-  mqttClient.publish(`media/commands/${SERVER_ID}/session`, JSON.stringify(payload));
+  mqttClient.publish(`media/${SERVER_ID}/device/session/commands`, JSON.stringify(payload));
   res.json({ success: true, message: "Comando de volumen de sesión enviado a MQTT ✅" });
 });
 
@@ -154,13 +183,25 @@ app.post("/session/:deviceId/:sessionId/volume", (req, res) => {
  * 🔇 POST /session/:deviceId/:sessionId/mute
  * body: { mute: true/false }
  */
-app.post("/session/:deviceId/:sessionId/mute", (req, res) => {
+app.post("/:ID_SVR/session/:deviceId/:sessionId/mute", (req, res) => {
   const { deviceId, sessionId } = req.params;
   const { mute } = req.body;
+  const requestedId = req.params.ID_SVR;
   const device = SoundMixer.devices[deviceId];
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
+
+  if(device){
+    if (!device) return res.status(404).json({ error: "Device not found" });
+    const session = device.sessions[sessionId];
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    session.mute = !!mute;
+  }
+  
 
   const payload = { serverId: SERVER_ID, deviceId: deviceId, sessionId: sessionId, mute: mute, action: "setSessionMute" };
-  mqttClient.publish(`media/commands/${SERVER_ID}/session`, JSON.stringify(payload));
+  mqttClient.publish(`media/${SERVER_ID}/device/session/commands`, JSON.stringify(payload));
   res.json({ success: true, message: "Comando de mute de sesión enviado a MQTT ✅" });
 });
 
@@ -181,16 +222,28 @@ function runPS(scriptPath, res) {
   });
 }
 
-app.post("/media/playpause", (req, res) => {
+app.post("/:ID_SVR/media/playpause", (req, res) => {
+  const requestedId = req.params.ID_SVR;
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
   mqttClient.publish(MQTT_TOPIC_COMMANDS, JSON.stringify({ action: "playpause", serverId: SERVER_ID }));
   res.json({ status: "ok", message: `Comando playpause recibido por: ${SERVER_ID} | enviado por MQTT ✅` });
   runPS(playScript);
 });
-app.post("/media/next", (req, res) => {
+app.post("/:ID_SVR/media/next", (req, res) => {
+  const requestedId = req.params.ID_SVR;
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
   mqttClient.publish(MQTT_TOPIC_COMMANDS, JSON.stringify({ action: "next", serverId: SERVER_ID }));
   res.json({ status: "ok", message: `Comando next recibido por: ${SERVER_ID} | enviado por MQTT ✅` });
 });
-app.post("/media/prev", (req, res) => {
+app.post("/:ID_SVR/media/prev", (req, res) => {
+  const requestedId = req.params.ID_SVR;
+  if (requestedId !== SERVER_ID && requestedId !== SERVER_IP) {
+    return res.status(400).json({ message: 'ID de servidor o IP no válido.' });
+  }
   mqttClient.publish(MQTT_TOPIC_COMMANDS, JSON.stringify({ action: "prev", serverId: SERVER_ID }));
   res.json({ status: "ok", message:`Comando prev recibido por: ${SERVER_ID} | enviado por MQTT ✅` });
 });
